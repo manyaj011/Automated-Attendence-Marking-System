@@ -1,0 +1,310 @@
+from flask import Flask, flash, render_template, request,redirect, session
+from flask_sqlalchemy import SQLAlchemy
+from flask_session import Session
+from flask_bcrypt import Bcrypt
+import cv2
+import os
+from datetime import date
+from datetime import datetime
+import numpy as np
+from sklearn.neighbors import KNeighborsClassifier
+import pandas as pd
+import joblib
+
+app=Flask(__name__)
+app.config["SECRET_KEY"]='65b0b774279de460f1cc5c92'
+app.config['SQLALCHEMY_DATABASE_URI']="sqlite:///new_database2.db"
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS']=False
+app.config["SESSION_PERMANENT"]=False
+app.config["SESSION_TYPE"]='filesystem'
+db=SQLAlchemy(app)
+bcrypt=Bcrypt(app)
+Session(app)
+
+# User Class
+class User(db.Model):
+    id=db.Column(db.Integer, primary_key=True)
+    name=db.Column(db.String(255), nullable=False)
+    def __repr__(self):
+        return f'User("{self.id}","{self.name}")'
+    
+# Attendance Class
+class Attendance(db.Model):
+    sno=db.Column(db.Integer, primary_key=True)
+    id=db.Column(db.String(255), nullable=False)
+    name=db.Column(db.String(255), nullable=False)
+    time=db.Column(db.String(255), nullable=False)
+    def __repr__(self):
+        return f'Attendance("{self.sno}","{self.id}","{self.name}","{self.time}")'
+
+# create admin Class
+class Admin(db.Model):
+    id=db.Column(db.Integer, primary_key=True)
+    username=db.Column(db.String(255), nullable=False)
+    password=db.Column(db.String(255), nullable=False)
+    def __repr__(self):
+        return f'Admin("{self.username}","{self.id}")'
+
+# create table
+with app.app_context():
+    db.create_all()
+
+nimgs = 50
+
+# Saving Date today in 2 different formats
+datetoday = date.today().strftime("%m_%d_%y")
+datetoday2 = date.today().strftime("%d-%B-%Y")
+
+# Initializing VideoCapture object to access WebCam
+face_detector = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+
+# If these directories don't exist, create them
+if not os.path.isdir('Attendance'):
+    os.makedirs('Attendance')
+if not os.path.isdir('static'):
+    os.makedirs('static')
+if not os.path.isdir('static/faces'):
+    os.makedirs('static/faces')
+if f'Attendance-{datetoday}.csv' not in os.listdir('Attendance'):
+    with open(f'Attendance/Attendance-{datetoday}.csv', 'w') as f:
+        f.write('Name,Roll,Time')
+
+
+# get a number of total registered users
+def totalreg():
+    return len(os.listdir('static/faces'))
+
+
+# extract the face from an image
+def extract_faces(img):
+    try:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        face_points = face_detector.detectMultiScale(gray, 1.2, 5, minSize=(20, 20))
+        return face_points
+    except:
+        return []
+
+
+# Identify face using ML model
+def identify_face(facearray):
+    model = joblib.load('static/face_recognition_model.pkl')
+    return model.predict(facearray)
+
+
+# A function which trains the model on all the faces available in faces folder
+def train_model():
+    faces = []
+    labels = []
+    userlist = os.listdir('static/faces')
+    for user in userlist:
+        for imgname in os.listdir(f'static/faces/{user}'):
+            img = cv2.imread(f'static/faces/{user}/{imgname}')
+            resized_face = cv2.resize(img, (50, 50))
+            faces.append(resized_face.ravel())
+            labels.append(user)
+    faces = np.array(faces)
+    knn = KNeighborsClassifier(n_neighbors=5)
+    knn.fit(faces, labels)
+    print(knn.score(faces, labels))
+    joblib.dump(knn, 'static/face_recognition_model.pkl')
+
+
+# Extract info from today's attendance file in attendance folder
+# def extract_attendance():
+#     df = pd.read_csv(f'Attendance/Attendance-{datetoday}.csv')
+#     names = df['Name']
+#     rolls = df['Roll']
+#     times = df['Time']
+#     l = len(df)
+#     return names, rolls, times, l
+
+
+# Add Attendance of a specific user
+def add_attendance(name):
+    username = name.split('_')[0]
+    userid = name.split('_')[1]
+    current_time = datetime.now().strftime("%H:%M:%S")
+    return 
+    df = pd.read_csv(f'Attendance/Attendance-{datetoday}.csv')
+    if int(userid) not in list(df['Roll']):
+        with open(f'Attendance/Attendance-{datetoday}.csv', 'a') as f:
+            f.write(f'\n{username},{userid},{current_time}')
+
+
+# main index 
+@app.route('/')
+def index():
+    return render_template('index.html',title="")
+
+
+# admin loign
+@app.route('/admin/',methods=["POST","GET"])
+def adminIndex():
+    admin=Admin(username='aryangupta',password=bcrypt.generate_password_hash('aryangupta',10))
+    db.session.add(admin)
+    db.session.commit()
+    # chect the request is post or not
+    if request.method == 'POST':
+        # get the value of field
+        username = request.form.get('username')
+        password = request.form.get('password')
+        # check the value is not empty
+        if username=="" and password=="":
+            flash('Please fill all the field','danger')
+            return redirect('/admin/')
+        else:
+            # login admin by username 
+            admins=Admin().query.filter_by(username=username).first()
+            if admins and bcrypt.check_password_hash(admins.password,password):
+                session['admin_id']=admins.id
+                session['admin_name']=admins.username
+                flash('Login Successfully','success')
+                return redirect('/admin/dashboard')
+            else:
+                flash('Invalid Email and Password','danger')
+                return redirect('/admin/')
+    else:
+        return render_template('admin/index.html',title="Admin Login")
+
+# admin Dashboard
+@app.route('/admin/dashboard')
+def adminDashboard():
+    if not session.get('admin_id'):
+        return redirect('/admin/')
+    totalUser=User.query.count()
+    allPresent = Attendance.query.all()
+    # names, rolls, times, l = extract_attendance()
+    return render_template('admin/dashboard.html',title="Admin Dashboard",allPresent=allPresent,totalUser=totalUser, totalreg=totalreg(), datetoday2=datetoday2)
+
+# admin get all user 
+@app.route('/admin/get-all-user', methods=["POST","GET"])
+def adminGetAllUser():
+    if not session.get('admin_id'):
+        return redirect('/admin/')
+    if request.method== "POST":
+        search=request.form.get('search')
+        users=User.query.filter(User.name.like('%'+search+'%')).all()
+        return render_template('admin/all-user.html',users=users)
+    else:
+        users=User.query.all()
+        return render_template('admin/all-user.html',users=users)
+
+@app.route('/admin/delete/<int:id>')
+def delete(id):
+    to_delete = User.query.filter_by(id=id).first()
+    db.session.delete(to_delete)
+    db.session.commit()
+    return redirect("/admin/get-all-user")
+    
+
+# change admin password
+@app.route('/admin/change-admin-password',methods=["POST","GET"])
+def adminChangePassword():
+    admin=Admin.query.get(1)
+    if request.method == 'POST':
+        username=request.form.get('username')
+        password=request.form.get('password')
+        if username == "" or password=="":
+            flash('Please fill the field','danger')
+            return redirect('/admin/change-admin-password')
+        else:
+            Admin().query.filter_by(username=username).update(dict(password=bcrypt.generate_password_hash(password,10)))
+            db.session.commit()
+            flash('Admin Password update successfully','success')
+            return redirect('/admin/change-admin-password')
+    else:
+        return render_template('admin/admin-change-password.html',title='Admin Change Password',admin=admin)
+
+# admin logout
+@app.route('/admin/logout')
+def adminLogout():
+    if not session.get('admin_id'):
+        return redirect('/admin/')
+    if session.get('admin_id'):
+        session['admin_id']=None
+        session['admin_name']=None
+        return redirect('/')
+    
+
+# Our main Face Recognition functionality. 
+# This function will run when we click on Take Attendance Button.
+@app.route('/start', methods=['GET'])
+def start():
+    # names, rolls, times, l = extract_attendance()
+
+    if 'face_recognition_model.pkl' not in os.listdir('static'):
+        return render_template('home.html', totalreg=totalreg(), datetoday2=datetoday2, mess='There is no trained model in the static folder. Please add a new face to continue.')
+
+    ret = True
+    cap = cv2.VideoCapture(0)
+    while ret:
+        ret, frame = cap.read()
+        if len(extract_faces(frame)) > 0:
+            (x, y, w, h) = extract_faces(frame)[0]
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (86, 32, 251), 1)
+            cv2.rectangle(frame, (x, y), (x+w, y-40), (86, 32, 251), -1)
+            face = cv2.resize(frame[y:y+h, x:x+w], (50, 50))
+            identified_person = identify_face(face.reshape(1, -1))[0]
+            # add_attendance(identified_person)
+            username = identified_person.split('_')[0]
+            userid = identified_person.split('_')[1]
+            current_time = datetime.now().strftime("%H:%M:%S")
+            sno = userid
+            mark_attendance = Attendance(sno=sno,name=username, id=userid, time=current_time)
+            db.session.add(mark_attendance)
+            db.session.commit()
+            cv2.putText(frame, f'{identified_person}', (x+5, y-5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.imshow('Attendance', frame)
+        if cv2.waitKey(1) == 27:
+            break
+    cap.release()
+    cv2.destroyAllWindows()
+    allPresent = Attendance.query.all()
+    # names, rolls, times, l = extract_attendance()
+    return render_template('/admin/dashboard.html',allPresent=allPresent, totalreg=totalreg(), datetoday2=datetoday2)
+
+
+# A function to add a new user.
+# This function will run when we add a new user.
+@app.route('/add', methods=['GET', 'POST'])
+def add():
+    newusername = request.form['newusername']
+    newuserid = request.form['newuserid']
+    userimagefolder = 'static/faces/'+newusername+'_'+str(newuserid)
+    # Enter the user in the database
+    object = User(id=newuserid, name=newusername)
+    db.session.add(object)
+    db.session.commit()
+    if not os.path.isdir(userimagefolder):
+        os.makedirs(userimagefolder)
+    i, j = 0, 0
+    cap = cv2.VideoCapture(0)
+    while 1:
+        _, frame = cap.read()
+        faces = extract_faces(frame)
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 20), 2)
+            cv2.putText(frame, f'Images Captured: {i}/{nimgs}', (30, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 20), 2, cv2.LINE_AA)
+            print(f'Images Captured: {i}/{nimgs}')
+            if j % 5 == 0:
+                name = newusername+'_'+str(i)+'.jpg'
+                cv2.imwrite(userimagefolder+'/'+name, frame[y:y+h, x:x+w])
+                i += 1
+            j += 1
+        if j == nimgs*5:
+            break
+        cv2.imshow('Adding new User', frame)
+        if cv2.waitKey(1) == 27:
+            break
+    cap.release()
+    cv2.destroyAllWindows()
+    print('Training Model')
+    train_model()
+    # names, rolls, times, l = extract_attendance()
+    return render_template('/admin/dashboard.html', totalreg=totalreg(), datetoday2=datetoday2)
+
+
+if __name__=="__main__":
+    app.run(debug=True)
